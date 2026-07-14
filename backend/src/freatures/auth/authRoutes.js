@@ -1,6 +1,6 @@
 const express = require('express');
 const axios = require('axios');
-const jwt = require("jsonwebtoken");
+const User = require('../../freatures/auth/authModel');
 const {signAccessToken,signRefreshToken,hashToken} = require('../../utils/tokens');
 const router = express.Router();
 const REFRESH_COOKIE_OPTS={
@@ -21,11 +21,12 @@ const ACCESS_TOKEN_OPTS={
 async function issueToken(res,user){
     const accessToken = signAccessToken(user);
     const refreshToken = signRefreshToken(user);
-    user.refreshToken.push({
+    user.refreshTokens=user.refreshTokens.filter(ft=>ft.expiresAt>new Date());
+    user.refreshTokens.push({
         tokenHash:hashToken(refreshToken),
         expiresAt:new Date(Date.now()+30*24* 60 * 60 * 1000)
     });
-    user.refreshToken=user.refreshToken.filter(ft=>ft.expiresAt>new Date());
+    
     await user.save();
     res.cookie('accessToken',accessToken,ACCESS_TOKEN_OPTS);
     res.cookie('refreshToken',refreshToken,REFRESH_COOKIE_OPTS);
@@ -60,6 +61,29 @@ router.get("/github/callback",async(req,res)=>{
         if(!githubAccessToken){
             return res.redirect(`${process.env.CLIENT_URL}/login?error=token_failed`);
         }
+        const profilesRes = await axios.get('https://api.github.com/user',{
+            headers:{Authorization:`Bearer ${githubAccessToken}`}
+        });
+        const profile = profilesRes.data;
+        let user = await User.findOne({githubId:String(profile.id)});
+        if(!user){
+            user=await User.create({
+                githubId:String(profile.id),
+                username:profile.login,
+                displayName:profile.name||profile.login,
+                avatarUrl:profile.avatar_url,
+                refreshTokens:[]
+            })
+        }
+        user.username = profile.login;
+        user.displayName = profile.name || profile.login;
+        user.avatarUrl = profile.avatar_url;
+        await issueToken(res,user);
+        res.redirect(`${process.env.CLIENT_URL}/dashboard`);
 
+    }catch(err){
+        console.error(err.response?.data||err.message);
+        res.redirect(`${process.env.CLIENT_URL}/login?error=auth_failed`);
     }
-})
+});
+module.exports = router;
